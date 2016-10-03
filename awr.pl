@@ -18,8 +18,12 @@ my $sid =  $ENV{'ORACLE_SID'};
 
 my $begin       = -1;
 my $end         = -1;
+my $begin2      = undef;
+my $end2        = undef;
 my $begin_date  = undef;
 my $end_date    = undef;
+my $begin_date2 = undef;
+my $end_date2   = undef;
 my $o_file      = "output.html";
 my $usage;
 my $global;
@@ -38,7 +42,10 @@ USAGE: ./awr.pl [options]
     --begind=[date]  : begin interval date
     --end=[num]      : ending awr snapshot id
     --endd=[date]    : end interval date
-    
+
+    --begind2=[date] : begin 2nd interval date (for awr comparison)
+    --endd2=[date]   : end 2nd interval date (for awr comparison)
+
     NOTE: Dates must comply to this mask: YYYYMMDD_HH24:MI:SS. For instance, 20160920_19:34:41
     
     --output[fname]  : output filename. A standard filename will be generated if empty
@@ -79,9 +86,13 @@ awr.pl --begind=20160927_11:50:00 --endd=20160927_14:15:00 --dbuser=system --dbp
 
 
 GetOptions("begin=i"  => \$begin,
+           "begin2=i" => \$begin2,
            "begind=s" => \$begin_date,
+           "begind2=s"=> \$begin_date2,
            "endd=s"   => \$end_date,
+           "endd2=s"  => \$end_date2
            "end=i"    => \$end,
+           "end2=i"   => \$end2,
            "dbuser=s" => \$dbuser,
            "dbpass=s" => \$dbpass,
            "dbinst=i" => \$inst_id,
@@ -93,7 +104,7 @@ GetOptions("begin=i"  => \$begin,
            "help"     => \$usage)
 or die ("Error in command line argument. awr.pl --help for usage info \n");
 
-
+# if true, then generate awr report compare
 if ($text) { $text="txt"; } else { $text="html"; }
 
 if ($usage) {
@@ -163,6 +174,25 @@ if ($begin_date && $end_date) {
 }
 
 
+if ($begin_date2 && $end_date2) {
+        my $the_sql = qq{
+                select a.begin_snap, b.end_snap
+                from (select max(snap_id) begin_snap
+          from dba_hist_snapshot
+                 where begin_interval_time <= to_date('$begin_date2','YYYY-MM-DD_HH24:MI:SS')) a,
+                (select min(snap_id) end_snap
+          from dba_hist_snapshot
+                 where end_interval_time >= to_date('$end_date2','YYYY-MM-DD_HH24:MI:SS')) b
+        };
+        $sth1 = $dbh->prepare ($the_sql);
+        $sth1->execute();
+        @data = $sth1->fetchrow_array();
+        $end2 = $data[1];
+        $begin2 = $data[0];
+        $sth1->finish();
+}
+
+
 if ($begin == -1 || $end == -1)  {
         $sth1 = $dbh->prepare ("select max(snap_id) from dba_hist_snapshot") or die ("Cannot get Snap id\n");
         $sth1->execute();
@@ -172,25 +202,43 @@ if ($begin == -1 || $end == -1)  {
         $sth1->finish();
 }
 
+my $compare_reports = ($begin_date2 && $end_date2);
 
 
-if ( ($begin != -1 && $end != -1) && ($o_file eq "output.html"))
-{
+if (!$compare_reports) {
+    if ( ($begin != -1 && $end != -1) && ($o_file eq "output.html"))
+    {
+        if (!$global) {
+            $o_file = "awr_".$inst_id."_".$sid."_".$begin."_".$end.".".$text;
+        } else {
+            $o_file = "awrg_".$inst_id."_".$sid."_".$begin."_".$end.".".$text;
+        }     
+    }
+} else {
     if (!$global) {
-        $o_file = "awr_".$inst_id."_".$sid."_".$begin."_".$end.".".$text;
+        $o_file = "awr_c_".$inst_id."_".$sid."_".$begin."_".$end."_".$begin2."_".$end2.".".$text;
     } else {
-        $o_file = "awrg_".$inst_id."_".$sid."_".$begin."_".$end.".".$text;
+        $o_file = "awrg_c_".$inst_id."_".$sid."_".$begin."_".$end."_".$begin2."_".$end2.".".$text;
     }     
-}
+}    
 
 
 my $sql;
-if ($global) {
-     $sql = "select output from table(dbms_workload_repository.awr_global_report_html ('$dbid','',$begin,$end))";
-    print "$sql\n";
+if (!$compare_reports) {
+    if ($global) {
+         $sql = "select output from table(dbms_workload_repository.awr_global_report_$text ('$dbid','',$begin,$end))";
+        print "$sql\n";
+    } else {
+        $sql = "select output from table(dbms_workload_repository.awr_report_$text ('$dbid',$inst_id,$begin,$end))";
+    }   
 } else {
-    $sql = "select output from table(dbms_workload_repository.awr_report_html ('$dbid',$inst_id,$begin,$end))";
-}   
+    if ($global) {
+         $sql = "select output from table(dbms_workload_repository.awr_global_report_$text ('$dbid','',$begin,$end,$dbid,'', $begin2, $end2))";
+        print "$sql\n";
+    } else {
+        $sql = "select output from table(dbms_workload_repository.awr_diff_report_$text ($dbid,$inst_id,$begin,$end,$dbid,$inst_id, $begin2, $end2))";
+    }   
+}
 
 print "Writing snapshot data from $begin to $end on $o_file\n\n";
 
